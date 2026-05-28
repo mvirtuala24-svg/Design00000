@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive 3D Smart House Planner (Under ₹25L)</title>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; font-family: 'Segoe UI', Arial, sans-serif; background: #1a1a1a; }
+        #canvas-container { width: 100vw; height: 100vh; }
+        #ui-overlay {
+            position: absolute; top: 15px; left: 15px; background: rgba(0, 0, 0, 0.85);
+            color: #fff; padding: 20px; border-radius: 12px; max-width: 340px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5); border: 1px solid #444; pointer-events: none;
+        }
+        h1 { margin: 0 0 10px 0; font-size: 18px; color: #4caf50; text-transform: uppercase; letter-spacing: 1px; }
+        h2 { margin: 0 0 15px 0; font-size: 13px; color: #bbb; font-weight: normal; }
+        .instruction-item { margin: 8px 0; font-size: 13px; display: flex; align-items: center; }
+        .badge { background: #4caf50; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-right: 8px; font-size: 11px; }
+        .badge.blue { background: #2196f3; }
+        #budget-tag { margin-top: 15px; padding-top: 10px; border-top: 1px solid #333; font-weight: bold; color: #ffeb3b; font-size: 14px; }
+    </style>
+    <!-- Three.js and OrbitControls Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <div id="ui-overlay">
+        <h1>3D House Planner</h1>
+        <h2>4 Bed | 2 Bath | Hall | Pooja | Store | Portico</h2>
+        <div class="instruction-item"><span class="badge">Orbit View</span>Left-click + drag on background</div>
+        <div class="instruction-item"><span class="badge">Zoom</span>Scroll mouse wheel</div>
+        <div class="instruction-item"><span class="badge blue">Interactive</span>Left-click + drag items to MOVE them</div>
+        <div id="budget-tag">Estimated Cost: ~₹23.5 Lakhs (Optimized)</div>
+    </div>
+
+    <script>
+        // --- 1. SETUP ENGINE & SCENE ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x1e1e24);
+
+        // Camera Setup
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 35, 45);
+
+        // Renderer Setup
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        container.appendChild(renderer.domElement);
+
+        // Orbit View Controls
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.maxPolarAngle = Math.PI / 2.1; // Don't go underneath floor
+
+        // --- 2. LIGHTING SYSTEM ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const sunLight = new THREE.DirectionalLight(0xfffaed, 0.8);
+        sunLight.position.set(30, 40, 20);
+        sunLight.castShadow = true;
+        sunLight.shadow.mapSize.width = 2048;
+        sunLight.shadow.mapSize.height = 2048;
+        sunLight.shadow.bias = -0.001;
+        scene.add(sunLight);
+
+        // --- 3. FLOORS, BOUNDARIES & ROADS ---
+        // Outer Plot (Earth / Grass)
+        const grassGeo = new THREE.PlaneGeometry(55, 45);
+        const grassMat = new THREE.MeshStandardMaterial({ color: 0x3b5334, roughness: 0.9 });
+        const grass = new THREE.Mesh(grassGeo, grassMat);
+        grass.rotation.x = -Math.PI / 2;
+        grass.receiveShadow = true;
+        scene.add(grass);
+
+        // Main Plinth Floor (Built-up area)
+        const floorGeo = new THREE.PlaneGeometry(36, 26);
+        const floorMat = new THREE.MeshStandardMaterial({ color: 0xd2c4b4, roughness: 0.5 });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.set(0, 0.02, 2); // Raised slightly over grass
+        floor.receiveShadow = true;
+        scene.add(floor);
+
+        // Outer Plot Boundary Walls
+        function buildBoundary(w, h, d, x, z) {
+            const geo = new THREE.BoxGeometry(w, h, d);
+            const mat = new THREE.MeshStandardMaterial({ color: 0x5e6368 });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(x, h/2, z);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            scene.add(mesh);
+        }
+        buildBoundary(55, 2.5, 0.5, 0, -22.5); // Back
+        buildBoundary(0.5, 2.5, 45, -27.5, 0); // Left
+        buildBoundary(0.5, 2.5, 45, 27.5, 0);  // Right
+        buildBoundary(18, 2.5, 0.5, -18.5, 22.5); // Front Left wall
+        buildBoundary(18, 2.5, 0.5, 18.5, 22.5);  // Front Right wall (Leaves center for gate)
+
+        // --- 4. STRUCTURAL WALL LAYOUT (2D Blueprint Generation) ---
+        const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xf3f3f3, roughness: 0.7 });
+        const wallHeight = 4.5;
+        const wallThickness = 0.3;
+
+        function createWall(startX, startZ, endX, endZ) {
+            const distance = Math.sqrt(Math.pow(endX - startX, 2) + Math.pow(endZ - startZ, 2));
+            const wallGeo = new THREE.BoxGeometry(wallThickness, wallHeight, distance);
+            const wall = new THREE.Mesh(wallGeo, wallMaterial);
+            
+            // Position middle point
+            wall.position.set((startX + endX) / 2, wallHeight / 2, (startZ + endZ) / 2);
+            // Angle mapping
+            wall.rotation.y = Math.atan2(endX - startX, endZ - startZ);
+            
+            wall.castShadow = true;
+            wall.receiveShadow = true;
+            scene.add(wall);
+        }
+
+        // Exterior Structural Layout Border
+        createWall(-18, -11, 18, -11);  // Back Main Wall
+        createWall(-18, 15, 18, 15);    // Front Main Wall
+        createWall(-18, -11, -18, 15);  // Left Exterior Wall
+        createWall(18, -11, 18, 15);    // Right Exterior Wall
+
+        // Interior Room Partitions
+        // Central Hall Matrix Crosses
+        createWall(-6, -11, -6, 15);    // Left Rooms Split Line
+        createWall(6, -11, 6, 15);      // Right Rooms Split Line
+        
+        // Horizontal Room Closures
+        createWall(-18, 2, -6, 2);      // Bed 1 / Bed 2 Separator
+        createWall(6, 2, 18, 2);        // Bed 3 / Bed 4 Separator
+        createWall(-18, -4, -6, -4);    // Bed 1 / Kitchen Separator
+        createWall(6, -4, 18, -4);      // Bed 4 / Bath Separators
+
+        // Utility Rooms Sub-divisions (Store, Pooja, Bathrooms)
+        createWall(-18, -7.5, -6, -7.5); // Kitchen & Store divider
+        createWall(-12, -11, -12, -4);   // Store Room lock
+        createWall(-6, 8, 0, 8);         // Pooja Room back-wall enclosure
+        createWall(0, 8, 0, 15);        // Pooja Room right partition
+        createWall(6, -7.5, 18, -7.5);   // Attached Bath & Common Bath border
+        createWall(12, -11, 12, -4);    // Washroom separation wall
+
+        // --- 5. FIXED PORTICO PILLARS & ARCHWAY ---
+        const pillarMat = new THREE.MeshStandardMaterial({ color: 0xc84b31, roughness: 0.4 }); // Terracotta Accents
+        function createPillar(x, z) {
+            const geo = new THREE.CylinderGeometry(0.4, 0.4, wallHeight, 16);
+            const mesh = new THREE.Mesh(geo, pillarMat);
+            mesh.position.set(x, wallHeight/2, z);
+            mesh.castShadow = true;
+            scene.add(mesh);
+        }
+        createPillar(0, 15);  // Portico Pillar Entrance Left
+        createPillar(5.5, 15); // Portico Pillar Entrance Right
+        
+        // Roof slab overlay for Portico Structure
+        const roofGeo = new THREE.BoxGeometry(6.5, 0.3, 6);
+        const roofMat = new THREE.MeshStandardMaterial({ color: 0x222831 });
+        const roof = new THREE.Mesh(roofGeo, roofMat);
+        roof.position.set(2.75, wallHeight, 12);
+        scene.add(roof);
+
+        // --- 6. DRAGGABLE INTERACTIVE OBJECT ENGINE ---
+        const draggableObjects = [];
+        const dragGroup = new THREE.Group();
+        scene.add(dragGroup);
+
+        // Blueprint Primitive Mesh Builder Factory
+        function addFurnitureAsset(w, h, d, color, x, z, name) {
+            const geo = new THREE.BoxGeometry(w, h, d);
+            const mat = new THREE.MeshStandardMaterial({ color: color, roughness: 0.6 });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(x, h/2 + 0.05, z);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            mesh.userData.name = name;
+            
+            dragGroup.add(mesh);
+            draggableObjects.push(mesh);
+        }
+
+        // Populating Interactive Moving Furnishings 
+        // 4 Master/Standard Beds
+        addFurnitureAsset(4.5, 1.2, 5, 0x8e6f57, -12, -1, "Master Bed 1");
+        addFurnitureAsset(4.5, 1.2, 5, 0x8e6f57, -12, 8, "Bedroom 2 Bed");
+        addFurnitureAsset(4.5, 1.2, 5, 0x5c3d2e, 12, 8, "Bedroom 3 Bed");
+        addFurnitureAsset(4.5, 1.2, 5, 0x5c3d2e, 12, -1, "Guest Bed 4");
+
+        // Central Hall Living setups
+        addFurnitureAsset(6, 1, 2, 0x3a6351, 0, -1, "Main Lounge Sofa");
+        addFurnitureAsset(4, 0.8, 4, 0x826754, 0, 4, "Dining Table");
+
+        // Sacred Pooja Room Structure Asset
+        addFurnitureAsset(2.5, 2.2, 1.5, 0xd4af37, -3, 11, "Mandir Altar");
+
+        // Washroom Sanitary blocks
+        addFurnitureAsset(1.8, 1.5, 1.8, 0xffffff, 9, -9, "Commode Unit 1");
+        addFurnitureAsset(1.8, 1.5, 1.8, 0xffffff, 15, -9, "Commode Unit 2");
+
+        // Store Room Crates
+        addFurnitureAsset(2, 2.5, 2, 0xa0522d, -15, -9, "Storage Rack");
+
+        // Luxury Parking Asset placed inside the Portico / Courtyard area
+        addFurnitureAsset(4.2, 2, 9, 0xbf1313, 3, 11, "Family Car SUV");
+
+        // --- 7. RAYCASTING INTERACTIVE DRAG-&-DROP CONTROLS ---
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        let selectedObject = null;
+        
+        // Safe tracking plane to compute clean intersection trajectories 
+        const planeGeo = new THREE.PlaneGeometry(1000, 1000);
+        planeGeo.rotateX(-Math.PI / 2);
+        const planeMat = new THREE.MeshBasicMaterial({ visible: false });
+        const dummyFloorPlane = new THREE.Mesh(planeGeo, planeMat);
+        scene.add(dummyFloorPlane);
+
+        const offset = new THREE.Vector3();
+
+        window.addEventListener('mousedown', onMouseDown, false);
+        window.addEventListener('mousemove', onMouseMove, false);
+        window.addEventListener('mouseup', onMouseUp, false);
+
+        function onMouseDown(event) {
+            // Disregard UI clicks
+            if(event.clientX < 360 && event.clientY < 220) return;
+
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(draggableObjects);
+
+            if (intersects.length > 0) {
+                controls.enabled = false; // Kill orbital camera movement during asset drag shift
+                selectedObject = intersects[0].object;
+
+                // Track where object was picked up relative to its center
+                const intersectionPlaneIntersect = raycaster.intersectObject(dummyFloorPlane);
+                if(intersectionPlaneIntersect.length > 0) {
+                    offset.copy(intersectionPlaneIntersect[0].point).sub(selectedObject.position);
+                }
+            }
+        }
+
+        function onMouseMove(event) {
+            if (!selectedObject) return;
+
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObject(dummyFloorPlane);
+
+            if (intersects.length > 0) {
+                const targetVec = intersects[0].point.sub(offset);
+                
+                // Snap to current floor height to maintain physics stability
+                selectedObject.position.x = targetVec.x;
+                selectedObject.position.z = targetVec.z;
+            }
+        }
+
+        function onMouseUp() {
+            selectedObject = null;
+            controls.enabled = true; // Hand back mouse engine execution context to orbit viewport camera
+        }
+
+        // --- 8. RENDERING LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        // Window Resize Adaptability
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Initialize App
+        animate();
+    </script>
+</body>
+  </html>
+  
